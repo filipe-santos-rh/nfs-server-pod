@@ -17,7 +17,9 @@ Within this repository the following 3 use cases will be tested:
 - Create a second Pod that will consume the same `pvc` previously mounted on the demo pod.  
 
 #### Accesses
-To properly run the NFS server, the container does required the SCC privileged. To avoid elavated accesses being granted to the Default Storage Account, we created a NFS Service Account and granted the accesses to that Service Account only.  
+To properly run the NFS server, the container requires SCC privileged. To avoid elavated accesses being granted to the Default Storage Account, we created a NFS Service Account and granted the accesses to that Service Account only.  
+
+We also granted the admin role to the NFS Service Account on the Storage namespace only.  
 
 To automate the creation of the Persistent Volume and Persistent Volume Claim, we are leveraging the NFS Service Account. We had to grant the Service Account the folowing role: `system:persistent-volume-provisioner` on the storage namespace.   
 
@@ -92,9 +94,9 @@ persistentvolumeclaim/nfs-srv-claim   Bound    pvc-6f4bbfea-e7ae-4bec-8ebe-e8b42
 
 ### Improvments or tweaks
 
-On the file [pod-demo.yaml](./pod-demo.yaml) I have used a configMap that would be execute a script to automate the pv creation since we need to gather the nfs svc IP, as we cannot use svc fqdn for mount points, since the mounts does happen prior to DNS resolution.  
+On the file [pod-demo.yaml](./pod-demo.yaml) I have used a configMap that executes a script to automate the PV creation since we need to gather the NFS SVC IP, as we cannot use NFS SVC FQDN for mounting the volumes. This is caused by a race condition, where the mounts are triggered prior to DNS resolution.  
 
-If you would like to remove this automation and implement some tasks manually, you may edit the following:  
+If you would like to remove this automation and go manually, you may edit the following:  
 
 **Step 1:**  
 edit the following file: [deployment.yaml](./deployment.yaml)
