@@ -16,6 +16,11 @@ Within this repository the following 3 use cases will be tested:
 *Case 3:*  
 - Create a second Pod that will consume the same `pvc` previously mounted on the demo pod.  
 
+#### Accesses
+To properly run the NFS server, the container does required the SCC privileged. To avoid elavated accesses being granted to the Default Storage Account, we created a NFS Service Account and granted the accesses to that Service Account only.  
+
+To automate the creation of the Persistent Volume and Persistent Volume Claim, we are leveraging the NFS Service Account. We had to grant the Service Account the folowing role: `system:persistent-volume-provisioner` on the storage namespace.   
+
 ### How to
 
 **Scenario 1**  
@@ -85,3 +90,157 @@ persistentvolumeclaim/nfs-pvc         Bound    nfs-pv                           
 persistentvolumeclaim/nfs-srv-claim   Bound    pvc-6f4bbfea-e7ae-4bec-8ebe-e8b421a4f740   8Gi        RWO            gp2            6m30s
 ```
 
+### Improvments or tweaks
+
+On the file [pod-demo.yaml](./pod-demo.yaml) I have used a configMap that would be execute a script to automate the pv creation since we need to gather the nfs svc IP, as we cannot use svc fqdn for mount points, since the mounts does happen prior to DNS resolution.  
+
+If you would like to remove this automation and implement some tasks manually, you may edit the following:  
+
+**Step 1:**  
+edit the following file: [deployment.yaml](./deployment.yaml)
+Remove the following block:  
+```
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  creationTimestamp: null
+  name: system:persistent-volume-provisioner
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:persistent-volume-provisioner
+subjects:
+- kind: ServiceAccount
+  name: nfs-server-sa
+  namespace: storage
+```  
+
+**Step 2:**  
+edit the following file: [pod-demo.yaml](./pod-demo.yaml)
+Remove the following block:  
+```
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: nfs-svc-ip-script
+  namespace: storage
+data:
+  nfs-svc-finder.sh: |
+    #!/bin/sh
+    oc login --token=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token) https://$KUBERNETES_SERVICE_HOST:$KUBERNETES_SERVICE_PORT --insecure-skip-tls-verify
+    SVC_IP=$(oc get svc nfs-service -n storage -o yaml | grep 'clusterIP: 172' | awk {'print $2'})
+    echo "Generating the demo pod manifest"
+    cat <<EOF > ./nfs-demo-pv-pvc.yaml
+    apiVersion: v1
+    kind: PersistentVolume
+    metadata:
+      name: nfs-pv
+      namespace: storage
+      labels:
+        app: nfs-demo
+    spec:
+      capacity:
+        storage: 1Gi
+      accessModes:
+        - ReadWriteMany
+      nfs:
+        server: "${SVC_IP}"
+        path: "/shared"
+    ---
+    apiVersion: v1
+    kind: PersistentVolumeClaim
+    metadata:
+      name: nfs-pvc
+      namespace: storage
+    spec:
+      accessModes:
+        - ReadWriteMany
+      storageClassName: ""
+      resources:
+        requests:
+          storage: 1Gi
+      selector:
+        matchLabels:
+          app: nfs-demo
+    EOF
+    echo "Applying the file nfs-demo-pv-pvc.yaml"
+    oc create -f ./nfs-demo-pv-pvc.yaml
+    echo "File Applied"
+    echo "waiting until job is completed"
+    oc wait --for=condition=complete --timeout=30s job/nfs-svc-ip-job
+    echo "Job Completed"
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: nfs-svc-ip-job
+  namespace: storage
+spec:
+  parallelism: 1    
+  completions: 1    
+  activeDeadlineSeconds: 1800 
+  backoffLimit: 6   
+  template:         
+    metadata:
+      name: nfs-svc-ip-job
+    spec:
+      serviceAccount: nfs-server-sa
+      serviceAccountName: nfs-server-sa
+      volumes:
+      - name: script
+        configMap:
+          name: nfs-svc-ip-script
+      containers:
+      - name: nfs-svc-finder
+        image: quay.io/openshift/origin-cli:4.11
+        volumeMounts:
+          - name: script
+            mountPath: /usr/nfs-svc-finder
+        command:
+        - /bin/sh
+        - /usr/nfs-svc-finder/nfs-svc-finder.sh
+        imagePullPolicy: IfNotPresent
+      restartPolicy: OnFailure
+---
+```
+
+**Step 3:**  
+Retrive the IP address of the NFS Service using th efollowing command:  
+`oc get svc nfs-service -n storage -o yaml`  
+
+You will need to create the PV and PVC using the following:  
+```
+cat <<EOF > ./nfs-demo-pv-pvc.yaml
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+    name: nfs-pv
+    namespace: storage
+    labels:
+    app: nfs-demo
+spec:
+    capacity:
+    storage: 1Gi
+    accessModes:
+    - ReadWriteMany
+    nfs:
+    server: "NFS_SVC_IP" # <-- Replace the value with the correct IP address of the NFS Service 
+    path: "/shared"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+    name: nfs-pvc
+    namespace: storage
+spec:
+    accessModes:
+    - ReadWriteMany
+    storageClassName: ""
+    resources:
+    requests:
+        storage: 1Gi
+    selector:
+    matchLabels:
+        app: nfs-demo
+EOF
+```
